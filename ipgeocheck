@@ -51,7 +51,7 @@ def main(
         Defaults to None.
 
         report (bool, optional): Flag to generate xlsx report.
-        Defaults to False.
+        Defaults to False. 
     """
     st = time()
     print("Extracting packages addresses ...")
@@ -63,7 +63,7 @@ def main(
     source = [IPv4Address(a[sc.IP].src) for a in packets if sc.IP in a]
     dest = [IPv4Address(a[sc.IP].dst) for a in packets if sc.IP in a]
 
-    print(f"Extracted {len(source)} packages")
+    print(f"Extracted {len(packets)} packages")
     df = pd.DataFrame({"src": source, "dest": dest})
     
     # IP global check
