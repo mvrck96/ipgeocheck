@@ -1,6 +1,8 @@
-# /bin/python3
+#!/bin/python3
 
+import os
 import subprocess
+from multiprocessing import Pool
 from ipaddress import IPv4Address
 from typing import Union
 from time import time
@@ -11,7 +13,7 @@ from typing_extensions import Annotated
 import scapy.all as sc
 import pandas as pd
 from rich import print
-from rich.progress import track
+from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.console import Console
 
@@ -19,19 +21,19 @@ from rich.console import Console
 console = Console()
 
 
-def get_country_by_ip(ip: str) -> Union[str, None]:
+def get_country_by_ip(ip: IPv4Address) -> Union[str, None]:
     """Get country code by ip address."""
 
     result = (
-        subprocess.run(["whois", ip], capture_output=True)
+        subprocess.run(["whois", str(ip)], capture_output=True)
         .stdout.decode("utf-8")
         .split("\n")
     )
     country = list(filter(lambda x: x.lower().startswith("country"), result))
     if country:
-        return country[-1].split(" ")[-1].strip()
+        return (ip, country[-1].split(" ")[-1].strip())
     else:
-        return None
+        return (ip, None)
 
 
 def main(
@@ -54,14 +56,18 @@ def main(
         Defaults to False. 
     """
     st = time()
-    print("Extracting packages addresses ...")
-    if packages:
-        packets = sc.rdpcap(file, count=packages)
-    else:
-        packets = sc.rdpcap(file)
+    with Progress(SpinnerColumn(),
+                  TextColumn("[progress.description]{task.description}"),
+                transient=True) as progress:
+        progress.add_task(
+            f"Extracting packets from [bold]{file.split('/')[-1]}[/bold] file ...")
+        if packages:
+            packets = sc.rdpcap(file, count=packages)
+        else:
+            packets = sc.rdpcap(file)
 
-    source = [IPv4Address(a[sc.IP].src) for a in packets if sc.IP in a]
-    dest = [IPv4Address(a[sc.IP].dst) for a in packets if sc.IP in a]
+        source = [IPv4Address(a[sc.IP].src) for a in packets if sc.IP in a]
+        dest = [IPv4Address(a[sc.IP].dst) for a in packets if sc.IP in a]
 
     print(f"Extracted {len(packets)} packages")
     df = pd.DataFrame({"src": source, "dest": dest})
@@ -79,11 +85,22 @@ def main(
     dest_valid = df.loc[(df["dest_global"]) & (df["dest_not_multicast"]), "dest"].values
 
     addrs = set([*src_valid, *dest_valid])
-    mapping = {}
 
     # Get country by valid IP
-    for addr in track(addrs, description="Fetching country codes: "):
-        mapping[addr] = get_country_by_ip(str(addr))
+    with Progress(SpinnerColumn(),
+                  TextColumn("[progress.description]{task.description}"),
+                transient=True) as progress:
+        progress.add_task("Fetching country codes ...")
+
+        av_cores = os.cpu_count()
+        if av_cores >= 4:
+            av_cores -= 2
+        else:
+            av_cores = 2
+
+        pool = Pool(av_cores)
+        res = pool.map(get_country_by_ip, addrs)
+        mapping = {i[0]: i[1] for i in res}
 
     print(f"Processed {len(addrs)} global unique IP")
 
@@ -93,8 +110,8 @@ def main(
     df["src_country"].fillna("LOCAL", inplace=True)
     df["dest_country"].fillna("LOCAL", inplace=True)
 
-    # Generate table
-    table = Table("Source IP", "Destination IP")
+    # Print result table
+    table = Table("Source IP", "Destination IP", header_style="")
     inc = Table("Country", "%", show_edge=False, show_header=False)
     outc = Table("Country", "%", show_edge=False, show_header=False)
 
@@ -110,7 +127,7 @@ def main(
 
     console.print(table)
 
-    if trace == True:
+    if trace:
         tt = Table("IP", "Country")
         for k, v in mapping.items():
             tt.add_row(str(k), v)
